@@ -59,13 +59,63 @@ class KendaraanModel:
         return False
 
     # DELETE
+
     def delete_kendaraan(self, kendaraan_id):
-        if self.conn:
-            cursor = self.conn.cursor()
-            query = f"DELETE FROM {self.table_name} WHERE id=%s AND status='Tersedia'"
-            cursor.execute(query, (kendaraan_id,))
+        if not self.conn:
+            return False
+
+        cursor = self.conn.cursor()
+
+        try:
+            # Pastikan kendaraan tidak sedang disewa
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM penyewaan
+                WHERE kendaraan_id = %s
+                AND status = 'Berjalan'
+                """,
+                (kendaraan_id,)
+            )
+            sewa_aktif = cursor.fetchone()[0]
+
+            if sewa_aktif > 0:
+                raise ValueError(
+                    "Kendaraan sedang disewa dan tidak dapat dihapus."
+                )
+
+            # Cek apakah kendaraan mempunyai riwayat penyewaan
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM penyewaan
+                WHERE kendaraan_id = %s
+                """,
+                (kendaraan_id,)
+            )
+            riwayat = cursor.fetchone()[0]
+
+            if riwayat > 0:
+                raise ValueError(
+                    "Kendaraan memiliki riwayat penyewaan. "
+                    "Data tidak dapat dihapus agar riwayat transaksi tetap terjaga."
+                )
+
+            # Kendaraan tanpa riwayat hanya dapat dihapus jika tersedia
+            cursor.execute(
+                """
+                DELETE FROM kendaraan
+                WHERE id = %s AND status = 'Tersedia'
+                """,
+                (kendaraan_id,)
+            )
+
             self.conn.commit()
-            deleted = cursor.rowcount > 0
+            return cursor.rowcount > 0
+
+        except Exception:
+            self.conn.rollback()
+            raise
+
+        finally:
             cursor.close()
-            return deleted
-        return False

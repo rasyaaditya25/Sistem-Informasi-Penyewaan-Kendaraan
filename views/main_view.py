@@ -193,6 +193,31 @@ class PenyewaanKendaraanView(ctk.CTk):
                       fg_color="#16803D").pack(fill="x", padx=15, pady=(15, 5))
         ctk.CTkButton(form, text="Hapus Kendaraan Terpilih", command=self.hapus_kendaraan,
                       fg_color="#B42318").pack(fill="x", padx=15, pady=5)
+        
+        # Dropdown status kendaraan
+        ctk.CTkLabel(
+            form,
+            text="Status Kendaraan",
+            anchor="w"
+        ).pack(fill="x", padx=15, pady=(10, 0))
+
+        self.combo_status_kendaraan = ctk.CTkComboBox(
+            form,
+            values=["Tersedia", "Disewa", "Perawatan"],
+            state="readonly"
+        )
+        self.combo_status_kendaraan.set("Tersedia")
+        self.combo_status_kendaraan.pack(
+            fill="x", padx=15, pady=7
+        )
+
+        ctk.CTkButton(
+            form,
+            text="Update Status Kendaraan",
+            command=self.update_status_kendaraan,
+            fg_color="#1D4ED8"
+        ).pack(fill="x", padx=15, pady=5)
+
         ctk.CTkButton(form, text="Bersihkan Form", command=self.bersihkan_form_kendaraan,
                       fg_color="gray").pack(fill="x", padx=15, pady=5)
 
@@ -481,6 +506,73 @@ class PenyewaanKendaraanView(ctk.CTk):
             self.refresh_all()
         except Exception as exc:
             messagebox.showerror("Tidak dapat menambah kendaraan", str(exc), parent=self)
+
+    def update_status_kendaraan(self):
+        selected = self.tabel_kendaraan.selection()
+
+        if not selected:
+            messagebox.showwarning(
+                "Pilih kendaraan",
+                "Pilih kendaraan yang ingin diubah statusnya.",
+                parent=self
+            )
+            return
+
+        kendaraan_id = int(selected[0])
+        status = self.combo_status_kendaraan.get().strip()
+
+        try:
+            # Pastikan kendaraan tidak memiliki penyewaan aktif
+            kendaraan = next(
+                (
+                    k for k in self.kendaraan_data
+                    if int(k["id"]) == kendaraan_id
+                ),
+                None
+            )
+
+            if not kendaraan:
+                raise ValueError("Data kendaraan tidak ditemukan.")
+
+            if status != "Disewa":
+                for sewa in self.penyewaan_data:
+                    if (
+                        int(sewa.get("kendaraan_id", 0)) == kendaraan_id
+                        and sewa.get("status") == "Berjalan"
+                    ):
+                        raise ValueError(
+                            "Status kendaraan tidak dapat diubah "
+                            "selama penyewaan masih berjalan."
+                        )
+
+            if not messagebox.askyesno(
+                "Konfirmasi",
+                f"Ubah status kendaraan menjadi '{status}'?",
+                parent=self
+            ):
+                return
+
+            hasil = self.kendaraan_controller.ubah_status(
+                kendaraan_id, status
+            )
+
+            if hasil is False:
+                raise ValueError("Status kendaraan gagal diperbarui.")
+
+            self.refresh_all()
+
+            messagebox.showinfo(
+                "Berhasil",
+                "Status kendaraan berhasil diperbarui.",
+                parent=self
+            )
+
+        except Exception as exc:
+            messagebox.showerror(
+                "Gagal memperbarui status",
+                str(exc),
+                parent=self
+            )
 
     def hapus_kendaraan(self):
         selected = self.tabel_kendaraan.selection()
