@@ -1,99 +1,214 @@
+
+from decimal import Decimal, InvalidOperation
 from config.database import Database
 
 
 class KendaraanModel:
+
     def __init__(self):
         self.db = Database()
-        self.conn = self.db.get_connection()
         self.table_name = "kendaraan"
 
     # READ
     def get_all_kendaraan(self):
-        if self.conn:
-            cursor = self.conn.cursor(dictionary=True)
-            query = f"SELECT * FROM {self.table_name} ORDER BY id DESC"
+        conn = self.db.get_connection()
+
+        if not conn:
+            return []
+
+        cursor = None
+
+        try:
+            cursor = conn.cursor(dictionary=True)
+
+            query = """
+                SELECT *
+                FROM kendaraan
+                ORDER BY id DESC
+            """
+
             cursor.execute(query)
-            result = cursor.fetchall()
-            cursor.close()
-            return result
-        return []
+            return cursor.fetchall()
+
+        finally:
+            if cursor:
+                cursor.close()
+            conn.close()
 
     # CREATE
-    def create_kendaraan(self, jenis, merek, nomor_polisi, tarif_harian):
+    def create_kendaraan(
+        self, jenis, merek, nomor_polisi, tarif_harian
+    ):
         if jenis not in ("Motor", "Mobil"):
-            raise ValueError("Jenis kendaraan harus Motor atau Mobil.")
-        if not merek.strip() or not nomor_polisi.strip():
-            raise ValueError("Merek dan nomor polisi wajib diisi.")
-        if tarif_harian <= 0:
+            raise ValueError(
+                "Jenis kendaraan harus Motor atau Mobil."
+            )
+
+        if not merek or not merek.strip():
+            raise ValueError("Merek kendaraan wajib diisi.")
+
+        if not nomor_polisi or not nomor_polisi.strip():
+            raise ValueError("Nomor polisi wajib diisi.")
+
+        try:
+            tarif = Decimal(str(tarif_harian))
+        except (InvalidOperation, ValueError, TypeError):
+            raise ValueError("Tarif harian harus berupa angka yang valid.")
+
+        if not tarif.is_finite() or tarif <= 0:
             raise ValueError("Tarif harian harus lebih dari nol.")
 
-        if self.conn:
-            cursor = self.conn.cursor()
-            query = f"""
-                INSERT INTO {self.table_name} (jenis, merek, nomor_polisi, tarif_harian, status)
+        conn = self.db.get_connection()
+
+        if not conn:
+            return False
+
+        cursor = None
+
+        try:
+            cursor = conn.cursor()
+
+            query = """
+                INSERT INTO kendaraan
+                (jenis, merek, nomor_polisi, tarif_harian, status)
                 VALUES (%s, %s, %s, %s, 'Tersedia')
             """
+
             cursor.execute(
                 query,
-                (jenis, merek.strip(), nomor_polisi.strip().upper(), tarif_harian),
+                (
+                    jenis,
+                    merek.strip(),
+                    nomor_polisi.strip().upper(),
+                    tarif
+                )
             )
-            self.conn.commit()
-            last_id = cursor.lastrowid
-            cursor.close()
-            return last_id
-        return False
+
+            conn.commit()
+            return cursor.lastrowid
+
+        except Exception:
+            conn.rollback()
+            raise
+
+        finally:
+            if cursor:
+                cursor.close()
+            conn.close()
 
     # UPDATE STATUS
     def update_status(self, kendaraan_id, status):
+
         if status not in ("Tersedia", "Disewa", "Perawatan"):
-            raise ValueError("Status tidak valid.")
+            raise ValueError("Status kendaraan tidak valid.")
 
-        if self.conn:
-            cursor = self.conn.cursor()
-            query = f"UPDATE {self.table_name} SET status=%s WHERE id=%s"
-            cursor.execute(query, (status, kendaraan_id))
-            self.conn.commit()
-            updated = cursor.rowcount > 0
-            cursor.close()
-            return updated
-        return False
+        # Status Disewa dikelola otomatis oleh transaksi penyewaan.
+        if status == "Disewa":
+            raise ValueError(
+                "Status Disewa hanya dapat diatur melalui proses penyewaan."
+            )
 
-    # DELETE
+        conn = self.db.get_connection()
 
-    def delete_kendaraan(self, kendaraan_id):
-        if not self.conn:
+        if not conn:
             return False
 
-        cursor = self.conn.cursor()
+        cursor = None
 
         try:
-            # Pastikan kendaraan tidak sedang disewa
+            conn.start_transaction()
+            cursor = conn.cursor(dictionary=True)
+
+            # Kunci data kendaraan agar tidak berubah bersamaan
             cursor.execute(
                 """
-                SELECT COUNT(*)
-                FROM penyewaan
-                WHERE kendaraan_id = %s
-                AND status = 'Berjalan'
+                SELECT id, status
+                FROM kendaraan
+                WHERE id = %s
+                FOR UPDATE
                 """,
                 (kendaraan_id,)
             )
-            sewa_aktif = cursor.fetchone()[0]
 
-            if sewa_aktif > 0:
+            kendaraan = cursor.fetchone()
+
+            if not kendaraan:
+                raise ValueError("Kendaraan tidak ditemukan.")
+
+            if kendaraan["status"] == "Disewa":
                 raise ValueError(
-                    "Kendaraan sedang disewa dan tidak dapat dihapus."
+                    "Kendaraan sedang disewa. Status tidak dapat diubah."
                 )
 
-            # Cek apakah kendaraan mempunyai riwayat penyewaan
             cursor.execute(
                 """
-                SELECT COUNT(*)
+                UPDATE kendaraan
+                SET status = %s
+                WHERE id = %s
+                """,
+                (status, kendaraan_id)
+            )
+
+            updated = cursor.rowcount > 0
+            conn.commit()
+
+            return updated
+
+        except Exception:
+            conn.rollback()
+            raise
+
+        finally:
+            if cursor:
+                cursor.close()
+            conn.close()
+
+    # DELETE
+    def delete_kendaraan(self, kendaraan_id):
+
+        conn = self.db.get_connection()
+
+        if not conn:
+            return False
+
+        cursor = None
+
+        try:
+            conn.start_transaction()
+            cursor = conn.cursor(dictionary=True)
+
+            # Kunci kendaraan agar tidak dihapus ketika sedang diproses
+            cursor.execute(
+                """
+                SELECT id, status
+                FROM kendaraan
+                WHERE id = %s
+                FOR UPDATE
+                """,
+                (kendaraan_id,)
+            )
+
+            kendaraan = cursor.fetchone()
+
+            if not kendaraan:
+                raise ValueError("Kendaraan tidak ditemukan.")
+
+            if kendaraan["status"] != "Tersedia":
+                raise ValueError(
+                    "Hanya kendaraan berstatus Tersedia yang dapat dihapus."
+                )
+
+            # Cek seluruh riwayat penyewaan
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS jumlah
                 FROM penyewaan
                 WHERE kendaraan_id = %s
                 """,
                 (kendaraan_id,)
             )
-            riwayat = cursor.fetchone()[0]
+
+            riwayat = cursor.fetchone()["jumlah"]
 
             if riwayat > 0:
                 raise ValueError(
@@ -101,21 +216,24 @@ class KendaraanModel:
                     "Data tidak dapat dihapus agar riwayat transaksi tetap terjaga."
                 )
 
-            # Kendaraan tanpa riwayat hanya dapat dihapus jika tersedia
             cursor.execute(
                 """
                 DELETE FROM kendaraan
-                WHERE id = %s AND status = 'Tersedia'
+                WHERE id = %s
                 """,
                 (kendaraan_id,)
             )
 
-            self.conn.commit()
-            return cursor.rowcount > 0
+            deleted = cursor.rowcount > 0
+            conn.commit()
+
+            return deleted
 
         except Exception:
-            self.conn.rollback()
+            conn.rollback()
             raise
 
         finally:
-            cursor.close()
+            if cursor:
+                cursor.close()
+            conn.close()
